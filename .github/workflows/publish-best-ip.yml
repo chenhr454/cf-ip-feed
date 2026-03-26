@@ -3,7 +3,7 @@ name: Publish Best CF IP Feed
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/15 * * * *"
 
 permissions:
   contents: write
@@ -16,7 +16,14 @@ jobs:
 
       - name: Download CloudflareST
         run: |
-          wget -O cfst.tar.gz "https://github.com/XIU2/CloudflareSpeedTest/releases/latest/download/CloudflareST_linux_amd64.tar.gz"
+          set -e
+          ASSET_URL=$(curl -fsSL https://api.github.com/repos/XIU2/CloudflareSpeedTest/releases/latest \
+            | grep browser_download_url \
+            | grep linux_amd64.tar.gz \
+            | head -n 1 \
+            | cut -d '"' -f 4)
+          echo "ASSET_URL=$ASSET_URL"
+          wget -O cfst.tar.gz "$ASSET_URL"
           tar -zxf cfst.tar.gz
           chmod +x CloudflareST
 
