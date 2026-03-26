@@ -23,9 +23,18 @@ jobs:
             | head -n 1 \
             | cut -d '"' -f 4)
           echo "ASSET_URL=$ASSET_URL"
+
           wget -O cfst.tar.gz "$ASSET_URL"
           tar -zxf cfst.tar.gz
-          chmod +x CloudflareST
+
+          BIN=$(find . -maxdepth 3 -type f \( -name "CloudflareST" -o -name "CloudflareST*" \) | head -n 1)
+          echo "BIN=$BIN"
+          [ -z "$BIN" ] && { echo "CloudflareST binary not found"; exit 1; }
+
+          chmod +x "$BIN"
+          cp "$BIN" ./CloudflareST
+          chmod +x ./CloudflareST
+
 
       - name: Run IPv4
         run: |
