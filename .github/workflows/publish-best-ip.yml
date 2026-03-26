@@ -1,86 +1,110 @@
+name: Publish Best CF IP Feed
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download CFST
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG=$(curl -fsSL https://api.github.com/repos/XIU2/CloudflareSpeedTest/releases/latest | grep '"tag_name"' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+          wget -O cfst_linux_amd64.tar.gz "https://github.com/XIU2/CloudflareSpeedTest/releases/download/${TAG}/cfst_linux_amd64.tar.gz"
+          tar -zxf cfst_linux_amd64.tar.gz
+          chmod +x cfst
+          [ -f ip.txt ] || { echo "ip.txt missing"; exit 1; }
+          [ -f ipv6.txt ] || touch ipv6.txt
+
+      - name: Run IPv4
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./cfst -f ip.txt -httping -url https://speed.cloudflare.com/__down?bytes=50000000 -n 200 -t 10 -dn 20 -dt 10 -o result_v4.csv
+          head -n 10 result_v4.csv || true
+
+      - name: Run IPv6
+        shell: bash
+        run: |
+          set +e
+          if [ -s ipv6.txt ]; then
+            ./cfst -f ipv6.txt -httping -url https://speed.cloudflare.com/__down?bytes=50000000 -n 200 -t 10 -dn 20 -dt 10 -o result_v6.csv
+          fi
+          [ -f result_v6.csv ] || echo 'IP,RTT,Loss' > result_v6.csv
+          head -n 10 result_v6.csv || true
+          exit 0
+
       - name: Build API JSON (Top10)
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p public
 
-          python3 - <<'PY'
+          python3 - << 'PY'
           import csv, json, os
           from datetime import datetime, timezone
 
-          def parse_top(csv_file, n=10):
-              out = []
-              if not os.path.exists(csv_file):
-                  return out
-
-              with open(csv_file, "r", encoding="utf-8", errors="ignore", newline="") as f:
-                  reader = csv.reader(f)
-                  next(reader, None)  # 跳过表头
-                  for row in reader:
+          def top10(path):
+              arr = []
+              if not os.path.exists(path):
+                  return arr
+              with open(path, 'r', encoding='utf-8', errors='ignore', newline='') as f:
+                  r = csv.reader(f)
+                  next(r, None)
+                  for row in r:
                       if not row:
                           continue
-                      ip = (row[0] or "").replace('"', '').strip()
-                      if not ip or ip.upper() == "IP":
+                      ip = (row[0] if len(row) > 0 else '').replace('"','').strip()
+                      if not ip:
                           continue
-
-                      # 兼容不同列格式：尽量取到延迟/丢包，取不到就给0
-                      latency = 0
-                      loss = 0
                       try:
-                          if len(row) > 4:
-                              latency = float((row[4] or "0").replace('"','').strip() or 0)
-                          elif len(row) > 1:
-                              latency = float((row[1] or "0").replace('"','').strip() or 0)
-                      except:
-                          latency = 0
-
-                      try:
-                          if len(row) > 3:
-                              loss = float((row[3] or "0").replace('"','').strip() or 0)
+                          loss = float((row[3] if len(row) > 3 else '0').replace('"','').strip() or 0)
                       except:
                           loss = 0
-
-                      out.append({
-                          "ip": ip,
-                          "latency": latency,
-                          "loss": loss
-                      })
-                      if len(out) >= n:
+                      try:
+                          latency = float((row[4] if len(row) > 4 else '0').replace('"','').strip() or 0)
+                      except:
+                          latency = 0
+                      arr.append({"ip": ip, "latency": latency, "loss": loss})
+                      if len(arr) >= 10:
                           break
-              return out
+              return arr
 
-          v4_list = parse_top("result_v4.csv", 10)
-          v6_list = parse_top("result_v6.csv", 10)
+          v4 = top10('result_v4.csv')
+          v6 = top10('result_v6.csv')
 
-          os.makedirs("public", exist_ok=True)
+          with open('public/v4.json', 'w', encoding='utf-8') as f:
+              json.dump({"status": True, "code": 200, "info": {"CN": v4, "CT": [], "CU": [], "CM": []}}, f, ensure_ascii=False, separators=(',', ':'))
 
-          with open("public/v4.json", "w", encoding="utf-8") as f:
-              json.dump(
-                  {"status": True, "code": 200, "info": {"CN": v4_list, "CT": [], "CU": [], "CM": []}},
-                  f, ensure_ascii=False, separators=(",", ":")
-              )
+          with open('public/v6.json', 'w', encoding='utf-8') as f:
+              json.dump({"status": True, "code": 200, "info": {"CN": v6, "CT": [], "CU": [], "CM": []}}, f, ensure_ascii=False, separators=(',', ':'))
 
-          with open("public/v6.json", "w", encoding="utf-8") as f:
-              json.dump(
-                  {"status": True, "code": 200, "info": {"CN": v6_list, "CT": [], "CU": [], "CM": []}},
-                  f, ensure_ascii=False, separators=(",", ":")
-              )
-
-          best_v4 = v4_list[0]["ip"] if v4_list else ""
-          best_v6 = v6_list[0]["ip"] if v6_list else ""
-
-          with open("public/latest.json", "w", encoding="utf-8") as f:
-              json.dump(
-                  {
-                      "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                      "best_v4": best_v4,
-                      "best_v6": best_v6
-                  },
-                  f, ensure_ascii=False, separators=(",", ":")
-              )
+          with open('public/latest.json', 'w', encoding='utf-8') as f:
+              json.dump({
+                  "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "best_v4": v4[0]["ip"] if v4 else "",
+                  "best_v6": v6[0]["ip"] if v6 else ""
+              }, f, ensure_ascii=False, separators=(',', ':'))
           PY
 
-          echo "==== public files ===="
           ls -lah public
           cat public/v4.json
           cat public/v6.json
+
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
+          publish_branch: gh-pages
