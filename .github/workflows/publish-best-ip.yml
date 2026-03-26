@@ -16,7 +16,7 @@ jobs:
 
       - name: Download CloudflareST
         run: |
-          wget -O cfst.tar.gz https://github.com/XIU2/CloudflareSpeedTest/releases/latest/download/CloudflareST_linux_amd64.tar.gz
+          wget -O cfst.tar.gz "https://github.com/XIU2/CloudflareSpeedTest/releases/latest/download/CloudflareST_linux_amd64.tar.gz"
           tar -zxf cfst.tar.gz
           chmod +x CloudflareST
 
