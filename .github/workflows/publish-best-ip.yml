@@ -11,87 +11,63 @@ permissions:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Download CloudflareST
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download CFST (official)
         shell: bash
         run: |
           set -euo pipefail
+          TAG=$(curl -fsSL https://api.github.com/repos/XIU2/CloudflareSpeedTest/releases/latest | grep '"tag_name"' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "Latest tag: $TAG"
 
-          ASSET_URL=$(curl -fsSL https://api.github.com/repos/XIU2/CloudflareSpeedTest/releases/latest \
-            | grep browser_download_url \
-            | grep 'linux_amd64.tar.gz' \
-            | head -n 1 \
-            | cut -d '"' -f 4)
+          wget -O cfst_linux_amd64.tar.gz "https://github.com/XIU2/CloudflareSpeedTest/releases/download/${TAG}/cfst_linux_amd64.tar.gz"
+          tar -zxf cfst_linux_amd64.tar.gz
+          chmod +x cfst
 
-          echo "ASSET_URL=$ASSET_URL"
-          wget -O cfst.tar.gz "$ASSET_URL"
-
-          mkdir -p cfst_dir
-          tar -zxf cfst.tar.gz -C cfst_dir
-
-          echo "==== extracted files ===="
-          find cfst_dir -type f | sed 's#^#- #'
-
-          BIN=$(find cfst_dir -type f \( -name "CloudflareST" -o -name "cfst" -o -name "CloudflareST_linux_amd64" \) | head -n 1 || true)
-          if [ -z "${BIN:-}" ]; then
-            BIN=$(find cfst_dir -type f -executable | head -n 1 || true)
-          fi
-          [ -z "${BIN:-}" ] && { echo "CloudflareST binary not found"; exit 1; }
-
-          chmod +x "$BIN"
-          cp "$BIN" ./CloudflareST
-          chmod +x ./CloudflareST
-
-          # 关键：准备 IPv4/IPv6 的 ip 列表文件
-          V4=$(find cfst_dir -type f -name "ip.txt" | head -n 1 || true)
-          V6=$(find cfst_dir -type f \( -name "ipv6.txt" -o -name "ipv6*.txt" \) | head -n 1 || true)
-
-          if [ -n "${V4:-}" ]; then
-            cp "$V4" ./ip.txt
-          else
-            curl -fsSL -o ip.txt https://raw.githubusercontent.com/XIU2/CloudflareSpeedTest/master/ip.txt
-          fi
-
-          if [ -n "${V6:-}" ]; then
-            cp "$V6" ./ipv6.txt
-          else
-            # 没有就创建空文件，IPv6 步骤里会自动容错
-            touch ipv6.txt
-          fi
-
+          echo "==== files ===="
           ls -lah
 
-      - name: Run IPv4
+      - name: Run IPv4 test (HTTPing, stable)
+        shell: bash
         run: |
-          ./CloudflareST -f ip.txt -n 200 -t 10 -o result_v4.csv
-          head -n 5 result_v4.csv
+          set -euo pipefail
+          ./cfst -f ip.txt -httping -n 200 -t 10 -dd -o result_v4.csv
+          echo "==== result_v4.csv ===="
+          head -n 5 result_v4.csv || true
 
-      - name: Run IPv6
+      - name: Run IPv6 test (HTTPing, optional)
+        shell: bash
         run: |
           set +e
-          if [ -s ipv6.txt ]; then
-            ./CloudflareST -6 -f ipv6.txt -n 200 -t 10 -o result_v6.csv
+          if [ -f ipv6.txt ]; then
+            ./cfst -f ipv6.txt -httping -n 200 -t 10 -dd -o result_v6.csv
             head -n 5 result_v6.csv || true
           else
-            echo "No ipv6.txt, skip v6 test."
             echo 'IP,RTT,Loss' > result_v6.csv
           fi
           exit 0
 
-      - name: Build JSON
+      - name: Build API JSON
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p public
-          BEST_V4=$(awk -F',' 'NR==2{gsub(/"/,"",$1); print $1}' result_v4.csv)
-          [ -z "$BEST_V4" ] && BEST_V4="1.1.1.1"
-          BEST_V6=$(awk -F',' 'NR==2{gsub(/"/,"",$1); print $1}' result_v6.csv 2>/dev/null || true)
+
+          BEST_V4=$(tail -n +2 result_v4.csv | head -n 1 | cut -d',' -f1 | tr -d '\r"')
+          if [ -z "${BEST_V4:-}" ]; then
+            BEST_V4=$(head -n 1 ip.txt | tr -d '\r')
+          fi
+
+          BEST_V6=$(tail -n +2 result_v6.csv | head -n 1 | cut -d',' -f1 | tr -d '\r"' || true)
 
           cat > public/v4.json <<EOF
           {"status":true,"code":200,"info":{"CN":[{"ip":"$BEST_V4","latency":0,"loss":0}],"CT":[],"CU":[],"CM":[]}}
           EOF
 
-          if [ -n "$BEST_V6" ]; then
+          if [ -n "${BEST_V6:-}" ]; then
             cat > public/v6.json <<EOF
           {"status":true,"code":200,"info":{"CN":[{"ip":"$BEST_V6","latency":0,"loss":0}],"CT":[],"CU":[],"CM":[]}}
           EOF
@@ -101,7 +77,16 @@ jobs:
           EOF
           fi
 
-      - name: Publish pages
+          cat > public/latest.json <<EOF
+          {"updated_at":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")","best_v4":"$BEST_V4","best_v6":"${BEST_V6:-}"}
+          EOF
+
+          echo "==== public ===="
+          ls -lah public
+          cat public/v4.json
+          cat public/v6.json
+
+      - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
