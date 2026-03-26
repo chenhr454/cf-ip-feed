@@ -67,7 +67,7 @@ jobs:
               -o result_v6.csv
           fi
 
-          # 保证后续步骤不因文件缺失报错
+          # 保证后续步骤不报缺文件
           [ -f result_v6.csv ] || echo 'IP,RTT,Loss' > result_v6.csv
           echo "==== result_v6.csv ===="
           head -n 10 result_v6.csv || true
@@ -83,9 +83,7 @@ jobs:
           [ -f result_v6.csv ] || echo 'IP,RTT,Loss' > result_v6.csv
 
           BEST_V4=$(tail -n +2 result_v4.csv | head -n 1 | cut -d',' -f1 | tr -d '\r"')
-          if [ -z "${BEST_V4:-}" ]; then
-            BEST_V4=$(head -n 1 ip.txt | tr -d '\r')
-          fi
+          [ -n "${BEST_V4:-}" ] || BEST_V4=$(head -n 1 ip.txt | tr -d '\r')
 
           BEST_V6=$(tail -n +2 result_v6.csv | head -n 1 | cut -d',' -f1 | tr -d '\r"' || true)
 
@@ -107,7 +105,7 @@ jobs:
           {"updated_at":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")","best_v4":"$BEST_V4","best_v6":"${BEST_V6:-}"}
           EOF
 
-          echo "==== public ===="
+          echo "==== public files ===="
           ls -lah public
           cat public/v4.json
           cat public/v6.json
