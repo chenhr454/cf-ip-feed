@@ -1,4 +1,4 @@
-name: Publish Best CF IP Feed
+name: Publish Best CF IP Feed (Top10 + v6 fallback)
 
 on:
   workflow_dispatch:
@@ -13,8 +13,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
+
+      # 拉取上一次 gh-pages 内容（用于 v6 兜底）
+      - name: Checkout gh-pages (for fallback)
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          ref: gh-pages
+          path: prev_pages
+          fetch-depth: 1
 
       - name: Download CFST
         shell: bash
@@ -24,28 +33,45 @@ jobs:
           wget -O cfst_linux_amd64.tar.gz "https://github.com/XIU2/CloudflareSpeedTest/releases/download/${TAG}/cfst_linux_amd64.tar.gz"
           tar -zxf cfst_linux_amd64.tar.gz
           chmod +x cfst
+
+      - name: Verify IP files
+        shell: bash
+        run: |
+          set -euo pipefail
           [ -f ip.txt ] || { echo "ip.txt missing"; exit 1; }
           [ -f ipv6.txt ] || touch ipv6.txt
 
       - name: Run IPv4
         shell: bash
         run: |
-          set -euo pipefail
-          ./cfst -f ip.txt -httping -url https://speed.cloudflare.com/__down?bytes=50000000 -n 200 -t 10 -dn 20 -dt 10 -o result_v4.csv
-          head -n 10 result_v4.csv || true
+          set +e
+          ./cfst \
+            -f ip.txt \
+            -httping \
+            -url https://speed.cloudflare.com/__down?bytes=50000000 \
+            -n 200 -t 10 \
+            -dn 20 -dt 10 \
+            -o result_v4.csv
+          [ -f result_v4.csv ] || echo 'IP,RTT,Loss' > result_v4.csv
+          exit 0
 
       - name: Run IPv6
         shell: bash
         run: |
           set +e
           if [ -s ipv6.txt ]; then
-            ./cfst -f ipv6.txt -httping -url https://speed.cloudflare.com/__down?bytes=50000000 -n 200 -t 10 -dn 20 -dt 10 -o result_v6.csv
+            ./cfst \
+              -f ipv6.txt \
+              -httping \
+              -url https://speed.cloudflare.com/__down?bytes=50000000 \
+              -n 200 -t 10 \
+              -dn 20 -dt 10 \
+              -o result_v6.csv
           fi
           [ -f result_v6.csv ] || echo 'IP,RTT,Loss' > result_v6.csv
-          head -n 10 result_v6.csv || true
           exit 0
 
-      - name: Build API JSON (Top10)
+      - name: Build JSON (Top10 + v6 fallback)
         shell: bash
         run: |
           set -euo pipefail
@@ -55,52 +81,77 @@ jobs:
           import csv, json, os
           from datetime import datetime, timezone
 
-          def top10(path):
-              arr = []
-              if not os.path.exists(path):
-                  return arr
-              with open(path, 'r', encoding='utf-8', errors='ignore', newline='') as f:
+          def to_float(x, d=0.0):
+              try:
+                  return float(str(x).replace('"','').strip() or d)
+              except:
+                  return d
+
+          def parse_top(csv_file, n=10):
+              out = []
+              if not os.path.exists(csv_file):
+                  return out
+              with open(csv_file, 'r', encoding='utf-8', errors='ignore', newline='') as f:
                   r = csv.reader(f)
-                  next(r, None)
+                  next(r, None)  # skip header
                   for row in r:
                       if not row:
                           continue
                       ip = (row[0] if len(row) > 0 else '').replace('"','').strip()
                       if not ip:
                           continue
-                      try:
-                          loss = float((row[3] if len(row) > 3 else '0').replace('"','').strip() or 0)
-                      except:
-                          loss = 0
-                      try:
-                          latency = float((row[4] if len(row) > 4 else '0').replace('"','').strip() or 0)
-                      except:
-                          latency = 0
-                      arr.append({"ip": ip, "latency": latency, "loss": loss})
-                      if len(arr) >= 10:
+                      loss = to_float(row[3] if len(row) > 3 else 0)
+                      latency = to_float(row[4] if len(row) > 4 else 0)
+                      out.append({"ip": ip, "latency": latency, "loss": loss})
+                      if len(out) >= n:
                           break
-              return arr
+              return out
 
-          v4 = top10('result_v4.csv')
-          v6 = top10('result_v6.csv')
+          def parse_prev_v6(path):
+              if not os.path.exists(path):
+                  return []
+              try:
+                  with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                      data = json.load(f)
+                  arr = data.get("info", {}).get("CN", [])
+                  clean = []
+                  for x in arr:
+                      ip = str(x.get("ip", "")).strip() if isinstance(x, dict) else ""
+                      if ip:
+                          clean.append({
+                              "ip": ip,
+                              "latency": float(x.get("latency", 0) or 0),
+                              "loss": float(x.get("loss", 0) or 0),
+                          })
+                  return clean[:10]
+              except:
+                  return []
 
-          with open('public/v4.json', 'w', encoding='utf-8') as f:
-              json.dump({"status": True, "code": 200, "info": {"CN": v4, "CT": [], "CU": [], "CM": []}}, f, ensure_ascii=False, separators=(',', ':'))
+          v4 = parse_top("result_v4.csv", 10)
+          v6_new = parse_top("result_v6.csv", 10)
+          v6_prev = parse_prev_v6("prev_pages/v6.json")
 
-          with open('public/v6.json', 'w', encoding='utf-8') as f:
-              json.dump({"status": True, "code": 200, "info": {"CN": v6, "CT": [], "CU": [], "CM": []}}, f, ensure_ascii=False, separators=(',', ':'))
+          # v6 空则回退到上一次
+          v6_final = v6_new if len(v6_new) > 0 else v6_prev
 
-          with open('public/latest.json', 'w', encoding='utf-8') as f:
+          # v4 若极端为空，给空数组（不硬塞假IP）
+          info_v4 = {"CN": v4, "CT": [], "CU": [], "CM": []}
+          info_v6 = {"CN": v6_final, "CT": [], "CU": [], "CM": []}
+
+          with open("public/v4.json", "w", encoding="utf-8") as f:
+              json.dump({"status": True, "code": 200, "info": info_v4}, f, ensure_ascii=False, separators=(",", ":"))
+
+          with open("public/v6.json", "w", encoding="utf-8") as f:
+              json.dump({"status": True, "code": 200, "info": info_v6}, f, ensure_ascii=False, separators=(",", ":"))
+
+          with open("public/latest.json", "w", encoding="utf-8") as f:
               json.dump({
                   "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                   "best_v4": v4[0]["ip"] if v4 else "",
-                  "best_v6": v6[0]["ip"] if v6 else ""
-              }, f, ensure_ascii=False, separators=(',', ':'))
+                  "best_v6": v6_final[0]["ip"] if v6_final else "",
+                  "v6_fallback_used": (len(v6_new) == 0 and len(v6_prev) > 0)
+              }, f, ensure_ascii=False, separators=(",", ":"))
           PY
-
-          ls -lah public
-          cat public/v4.json
-          cat public/v6.json
 
       - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v4
