@@ -27,7 +27,7 @@ jobs:
           wget -O cfst.tar.gz "$ASSET_URL"
           tar -zxf cfst.tar.gz
 
-          BIN=$(find . -maxdepth 3 -type f \( -name "CloudflareST" -o -name "CloudflareST*" \) | head -n 1)
+          BIN=$(find . -maxdepth 3 -type f -name "CloudflareST*" | grep -Ev '\.md$|\.txt$|LICENSE' | head -n 1)
           echo "BIN=$BIN"
           [ -z "$BIN" ] && { echo "CloudflareST binary not found"; exit 1; }
 
