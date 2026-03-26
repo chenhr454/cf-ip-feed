@@ -34,36 +34,50 @@ jobs:
           echo "==== extracted files ===="
           find cfst_dir -type f | sed 's#^#- #'
 
-          # 先按常见名字找
           BIN=$(find cfst_dir -type f \( -name "CloudflareST" -o -name "cfst" -o -name "CloudflareST_linux_amd64" \) | head -n 1 || true)
-
-          # 找不到就退化为“任意可执行文件”
           if [ -z "${BIN:-}" ]; then
             BIN=$(find cfst_dir -type f -executable | head -n 1 || true)
           fi
+          [ -z "${BIN:-}" ] && { echo "CloudflareST binary not found"; exit 1; }
 
-          # 还找不到就失败
-          if [ -z "${BIN:-}" ]; then
-            echo "CloudflareST binary not found"
-            exit 1
-          fi
-
-          echo "BIN=$BIN"
           chmod +x "$BIN"
           cp "$BIN" ./CloudflareST
           chmod +x ./CloudflareST
-          ./CloudflareST -h | head -n 5 || true
+
+          # 关键：准备 IPv4/IPv6 的 ip 列表文件
+          V4=$(find cfst_dir -type f -name "ip.txt" | head -n 1 || true)
+          V6=$(find cfst_dir -type f \( -name "ipv6.txt" -o -name "ipv6*.txt" \) | head -n 1 || true)
+
+          if [ -n "${V4:-}" ]; then
+            cp "$V4" ./ip.txt
+          else
+            curl -fsSL -o ip.txt https://raw.githubusercontent.com/XIU2/CloudflareSpeedTest/master/ip.txt
+          fi
+
+          if [ -n "${V6:-}" ]; then
+            cp "$V6" ./ipv6.txt
+          else
+            # 没有就创建空文件，IPv6 步骤里会自动容错
+            touch ipv6.txt
+          fi
+
+          ls -lah
 
       - name: Run IPv4
         run: |
-          ./CloudflareST -n 200 -t 10 -o result_v4.csv
+          ./CloudflareST -f ip.txt -n 200 -t 10 -o result_v4.csv
           head -n 5 result_v4.csv
 
       - name: Run IPv6
         run: |
           set +e
-          ./CloudflareST -6 -n 200 -t 10 -o result_v6.csv
-          head -n 5 result_v6.csv || true
+          if [ -s ipv6.txt ]; then
+            ./CloudflareST -6 -f ipv6.txt -n 200 -t 10 -o result_v6.csv
+            head -n 5 result_v6.csv || true
+          else
+            echo "No ipv6.txt, skip v6 test."
+            echo 'IP,RTT,Loss' > result_v6.csv
+          fi
           exit 0
 
       - name: Build JSON
