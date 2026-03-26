@@ -30,25 +30,47 @@ jobs:
           echo "==== files ===="
           ls -lah
 
+      - name: Verify IP list files
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f ip.txt ] || { echo "ip.txt not found in package"; exit 1; }
+          [ -f ipv6.txt ] || touch ipv6.txt
+          ls -lah ip.txt ipv6.txt
+
       - name: Run IPv4 test (with speed)
         shell: bash
         run: |
           set -euo pipefail
-          ./cfst -f ip.txt -httping -n 200 -t 10 -o result_v4.csv
+          ./cfst \
+            -f ip.txt \
+            -httping \
+            -url https://speed.cloudflare.com/__down?bytes=50000000 \
+            -n 200 -t 10 \
+            -dn 20 -dt 10 \
+            -o result_v4.csv
+
           echo "==== result_v4.csv ===="
-          head -n 5 result_v4.csv || true
+          head -n 10 result_v4.csv || true
 
       - name: Run IPv6 test (with speed, optional)
         shell: bash
         run: |
           set +e
-          if [ -f ipv6.txt ]; then
-            ./cfst -f ipv6.txt -httping -n 200 -t 10 -o result_v6.csv
-            echo "==== result_v6.csv ===="
-            head -n 5 result_v6.csv || true
-          else
-            echo 'IP,RTT,Loss' > result_v6.csv
+          if [ -s ipv6.txt ]; then
+            ./cfst \
+              -f ipv6.txt \
+              -httping \
+              -url https://speed.cloudflare.com/__down?bytes=50000000 \
+              -n 200 -t 10 \
+              -dn 20 -dt 10 \
+              -o result_v6.csv
           fi
+
+          # 保证后续步骤不因文件缺失报错
+          [ -f result_v6.csv ] || echo 'IP,RTT,Loss' > result_v6.csv
+          echo "==== result_v6.csv ===="
+          head -n 10 result_v6.csv || true
           exit 0
 
       - name: Build API JSON
@@ -56,6 +78,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p public
+
+          [ -f result_v4.csv ] || { echo "result_v4.csv missing"; exit 1; }
+          [ -f result_v6.csv ] || echo 'IP,RTT,Loss' > result_v6.csv
 
           BEST_V4=$(tail -n +2 result_v4.csv | head -n 1 | cut -d',' -f1 | tr -d '\r"')
           if [ -z "${BEST_V4:-}" ]; then
@@ -86,6 +111,7 @@ jobs:
           ls -lah public
           cat public/v4.json
           cat public/v6.json
+          cat public/latest.json
 
       - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v4
