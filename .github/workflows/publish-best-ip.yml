@@ -30,20 +30,21 @@ jobs:
           echo "==== files ===="
           ls -lah
 
-      - name: Run IPv4 test (HTTPing, stable)
+      - name: Run IPv4 test (with speed)
         shell: bash
         run: |
           set -euo pipefail
-          ./cfst -f ip.txt -httping -n 200 -t 10 -dd -o result_v4.csv
+          ./cfst -f ip.txt -httping -n 200 -t 10 -o result_v4.csv
           echo "==== result_v4.csv ===="
           head -n 5 result_v4.csv || true
 
-      - name: Run IPv6 test (HTTPing, optional)
+      - name: Run IPv6 test (with speed, optional)
         shell: bash
         run: |
           set +e
           if [ -f ipv6.txt ]; then
-            ./cfst -f ipv6.txt -httping -n 200 -t 10 -dd -o result_v6.csv
+            ./cfst -f ipv6.txt -httping -n 200 -t 10 -o result_v6.csv
+            echo "==== result_v6.csv ===="
             head -n 5 result_v6.csv || true
           else
             echo 'IP,RTT,Loss' > result_v6.csv
