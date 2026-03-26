@@ -1,0 +1,61 @@
+名称: Publish Best CF IP Feed
+
+开启:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: 编写
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - 名称: Download CloudflareST
+运行: |
+          wget -O cfst.tar.gz https://github.com/XIU2/CloudflareSpeedTest/releases/latest/download/CloudflareST_linux_amd64.tar.gz
+          tar -zxf cfst.tar.gz
+          chmod +x CloudflareST
+
+      - 名称: Run IPv4
+运行: |
+          ./CloudflareST -n 200 -t 10 -o result_v4.csv
+          head -n 5 result_v4.csv
+
+      - 名称: Run IPv6
+运行: |
+          set +e
+          ./CloudflareST -6 -n 200 -t 10 -o result_v6.csv
+          head -n 5 result_v6.csv || true
+          exit 0
+
+      - 名称: Build JSON
+运行: |
+          mkdir -p public
+          BEST_V4=$(awk -F',' 'NR==2{gsub(/"/,"",$1); print $1}' result_v4.csv)
+          [ -z "$BEST_V4" ] && BEST_V4="1.1.1.1"
+          BEST_V6=$(awk -F',' 'NR==2{gsub(/"/,"",$1); print $1}' result_v6.csv 2>/dev/null || true)
+
+          cat > public/v4.json <<EOF
+          {"status":true,"code":200,"info":{"CN":[{"ip":"$BEST_V4","latency":0,"loss":0}],"CT":[],"CU":[],"CM":[]}}
+          EOF
+
+          if [ -n "$BEST_V6" ]; then
+            cat > public/v6.json <<EOF
+          {"status":true,"code":200,"info":{"CN":[{"ip":"$BEST_V6","latency":0,"loss":0}],"CT":[],"CU":[],"CM":[]}}
+          EOF
+          else
+            cat > public/v6.json <<EOF
+          {"status":true,"code":200,"info":{"CN":[],"CT":[],"CU":[],"CM":[]}}
+          EOF
+          fi
+
+      - 名称: Publish pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
+          publish_branch: gh-pages
